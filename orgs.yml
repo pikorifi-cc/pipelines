@@ -1,0 +1,98 @@
+---
+resources:
+  - name: crawler-pipelines
+    type: git
+    icon: github
+    source:
+      git_config:
+        - name: safe.directory
+          value: '*'
+      password: ((github-token))
+      skip_ssl_verification: true
+      uri: https://github.com/cloud-pipelines-remix/crawler-pipelines.git
+      username: ((git-username))
+
+jobs:
+  - name: set-pipelines
+    plan:
+      - get: crawler-pipelines
+      - across:
+          - var: orgs
+            values: [ "dashaun-demo", "dashaun-com" ]
+      - set_pipeline: set-org-pipeline
+        file: crawler-pipelines/pipelines/org.yml
+        team: other-team
+  - name: setup-orgs
+    plan:
+      - get: dashaun-demo-repos
+        trigger: true
+      - load_var: repos
+        file: dashaun-demo-repos/repository-list.txt
+      - across:
+          - var: repo
+            values: ((.:repos))
+        set_pipeline: ((.:repo.name))
+        file: upgrade-petclinic-demo/pipelines/branch.yml
+        vars: { branch: ((.:branch.name)),
+                github-token: ((github-token)),
+                dockerhub-user: ((dockerhub-user)),
+                dockerhub-token: ((dockerhub-token)),
+                git-username: ((git-username)) }
+  - name: set-feature-pipelines
+    plan:
+      - in_parallel:
+          - get: branches
+            trigger: true
+          - get: upgrade-petclinic-demo
+      - load_var: branches
+        file: branches/branches.json
+      - across:
+          - var: branch
+            values: ((.:branches))
+        set_pipeline: ((.:branch.name))
+        file: upgrade-petclinic-demo/pipelines/branch.yml
+        vars: { branch: ((.:branch.name)),
+                github-token: ((github-token)),
+                dockerhub-user: ((dockerhub-user)),
+                dockerhub-token: ((dockerhub-token)),
+                git-username: ((git-username)) }
+  - name: spring-application-advisor
+    serial: true
+    public: true
+    plan:
+      - get: every-3-hours
+        trigger: true
+      - get: repo
+        trigger: true
+        params: {depth: 1}
+      - task: spring-application-advisor
+        privileged: true
+        config:
+          platform: linux
+          image_resource:
+            type: docker-image
+            source:
+              repository: dashaun/task-runner
+              username: ((dockerhub-user))
+              password: ((dockerhub-token))
+              tag: 1.0.4-linux-x86
+          inputs:
+            - name: repo
+          run:
+            path: /bin/bash
+            args:
+              - -exc
+              - |
+                set +x
+                export GIT_TOKEN_FOR_PRS=((github-token))
+                export ADVISOR_SERVER=https://saa-remix.dashaun.live
+                source "/root/.sdkman/bin/sdkman-init.sh"
+                cd repo
+                sdk install java 21.0.2-graalce
+                sdk use java 21.0.2-graalce
+                set -x
+                git checkout main
+                advisor -version
+                advisor build-config get
+                advisor upgrade-plan get
+                advisor upgrade-plan apply --push
